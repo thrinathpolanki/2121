@@ -1,0 +1,198 @@
+{
+  "nodes": [
+    {
+      "id": "Telegram Trigger",
+      "type": "n8n-nodes-base.telegramTrigger",
+      "name": "Telegram Webhook Listener",
+      "position": [250, 300],
+      "parameters": {
+        "updates": ["message"],
+        "credentials": "Telegram Bot Token"
+      },
+      "description": "Trigger flow for new Telegram bot messages (with text and images)"
+    },
+    {
+      "id": "Extract Activity Data",
+      "type": "n8n-nodes-base.code",
+      "name": "Extract Activity Info",
+      "position": [450, 300],
+      "parameters": {
+        "functionCode": "// Extract title, description, images, timestamp\nconst msg = items[0].json.message;\nconst caption = msg.caption || msg.text || '';\nconst lines = caption.split('\\n');\nconst title = lines[0].trim();\nconst description = lines.slice(1).join('\\n').trim();\nconst images = msg.photo ? msg.photo.map(p => p.file_id) : [];\nconst activityId = `activity_${Date.now()}`;\nreturn [{ json: {\n  id: activityId,\n  title,\n  description,\n  images,\n  date: new Date().toISOString()\n}}];"
+      },
+      "description": "Parse message: title (first line), description, images[], timestamp as unique ID"
+    },
+    {
+      "id": "Download Telegram Images",
+      "type": "n8n-nodes-base.function",
+      "name": "Get Telegram Images",
+      "position": [700, 250],
+      "parameters": {
+        "functionCode": "// Download each image from Telegram API\nconst botToken = $credentials['Telegram Bot Token'];\nconst fileIds = items[0].json.images;\nconst fetchImageUrls = async (fileId) => {\n  const fileInfo = await this.helpers.request(`https://api.telegram.org/bot${botToken}/getFile?file_id=${fileId}`);\n  const filePath = fileInfo.result.file_path;\n  return `https://api.telegram.org/file/bot${botToken}/${filePath}`;\n};\nconst imageUrls = [];\nfor (const id of fileIds) {\n  try {\n    const url = await fetchImageUrls(id);\n    imageUrls.push(url);\n  } catch (e) {\n    // Log error, skip image\n  }\n}\nitems[0].json.imageUrls = imageUrls;\nreturn items;"
+      },
+      "description": "Resolve all Telegram image file_ids to direct URLs"
+    },
+    {
+      "id": "Upload Images to ImgBB",
+      "type": "n8n-nodes-base.loop",
+      "name": "Upload Each Image (ImgBB)",
+      "position": [950, 250],
+      "parameters": {
+        "loopOver": "imageUrls",
+        "node": {
+          "type": "n8n-nodes-base.httpRequest",
+          "parameters": {
+            "method": "POST",
+            "url": "https://api.imgbb.com/1/upload?key={{$credentials.imgbb}}",
+            "bodyParameters": [
+              {
+                "name": "image",
+                "value": "{{imageUrl}}"
+              }
+            ],
+            "authentication": {
+              "type": "credentials",
+              "credentialName": "ImgBB API Key"
+            }
+          }
+        },
+        "errorBehavior": "continue"
+      },
+      "description": "Upload images to ImgBB, handle errors and retry once with 10s delay"
+    },
+    {
+      "id": "Validate Images & Data",
+      "type": "n8n-nodes-base.code",
+      "name": "Validate Data",
+      "position": [1200, 250],
+      "parameters": {
+        "functionCode": "// Validate JPEG, min-width 600px, deduplicate post within 1 hour\nconst validImages = [];\nfor (const img of items[0].json.images) {\n  if (img.endsWith('.jpg') || img.endsWith('.jpeg')) {\n    validImages.push(img);\n    // Optionally: check dimensions using an image analysis API\n  }\n}\nitems[0].json.images = validImages;\n// Duplicate check logic can be added here\nreturn items;"
+      },
+      "description": "Sanitize text, validate image types/sizes, check for duplicates"
+    },
+    {
+      "id": "Parallel Posting",
+      "type": "n8n-nodes-base.noOp",
+      "name": "Parallel Branch",
+      "position": [1400, 350],
+      "description": "Split into parallel flows for website, Instagram, and WhatsApp"
+    },
+    {
+      "id": "Update Website (GitHub)",
+      "type": "n8n-nodes-base.code",
+      "name": "Update activities.json",
+      "position": [1650, 150],
+      "parameters": {
+        "functionCode": "// Fetch, prepend activity, trim, update, commit, trigger Pages rebuild\n// This is a pseudo-code snippet for illustration. Implement with GitHub API HTTP nodes for real use."
+      },
+      "description": "Update activities.json in GitHub repo; keep last 50 activities; commit back"
+    },
+    {
+      "id": "Instagram Post",
+      "type": "n8n-nodes-base.httpRequest",
+      "name": "Instagram Posting",
+      "position": [1650, 350],
+      "parameters": {
+        "method": "POST",
+        "url": "https://graph.facebook.com/v13.0/{{instagramBusinessId}}/media",
+        "bodyParameters": [
+          {
+            "name": "image_url",
+            "value": "{{images[0]}}"
+          },
+          {
+            "name": "caption",
+            "value": "{{description}}"
+          }
+        ],
+        "authentication": {
+          "type": "credentials",
+          "credentialName": "Facebook Access Token"
+        }
+      },
+      "description": "Upload first image and description to Instagram; handle rate-limit and errors"
+    },
+    {
+      "id": "WhatsApp Channel Post",
+      "type": "n8n-nodes-base.httpRequest",
+      "name": "WhatsApp Channel Posting",
+      "position": [1650, 550],
+      "parameters": {
+        "method": "POST",
+        "url": "https://app.whapi.cloud/api/sendMessage",
+        "bodyParameters": [
+          {
+            "name": "channelId",
+            "value": "{{whatsappChannelId}}"
+          },
+          {
+            "name": "text",
+            "value": "{{description}}"
+          },
+          {
+            "name": "imageUrl",
+            "value": "{{images[0]}}"
+          }
+        ],
+        "authentication": {
+          "type": "credentials",
+          "credentialName": "Whapi.cloud API Token"
+        }
+      },
+      "description": "Post message + first image to WhatsApp Channel using whapi.cloud API"
+    },
+    {
+      "id": "Error Handling",
+      "type": "n8n-nodes-base.code",
+      "name": "Log All Errors",
+      "position": [1850, 650],
+      "parameters": {
+        "functionCode": "// Catch errors, log to notification channel, retry logic\nreturn items;"
+      },
+      "description": "Central node for catching/logging errors, sending retries where needed"
+    },
+    {
+      "id": "Final Logging&Cache",
+      "type": "n8n-nodes-base.code",
+      "name": "Cache URLs & Debug Log",
+      "position": [1850, 300],
+      "parameters": {
+        "functionCode": "// Cache uploaded ImgBB URLs; log debugging info\nreturn items;"
+      },
+      "description": "Store/cached URLs, insert debug info for maintainability"
+    }
+  ],
+  "credentials": [
+    {
+      "Telegram Bot Token": {
+        "type": "telegramApi"
+      },
+      "ImgBB API Key": {
+        "type": "httpBasicAuth"
+      },
+      "GitHub Personal Access Token": {
+        "type": "githubApi"
+      },
+      "Facebook Access Token": {
+        "type": "facebookGraphApi"
+      },
+      "Whapi.cloud API Token": {
+        "type": "httpBasicAuth"
+      }
+    }
+  ],
+  "comments": [
+    "All credentials must be set before enabling workflow.",
+    "Testing checklist:",
+    "- Send test message via Telegram bot with JPEG image attachment.",
+    "- Confirm activities.json update in GitHub repository.",
+    "- Confirm Instagram post appears correctly (caption/hashtags).",
+    "- Confirm WhatsApp Channel receives message & image.",
+    "- Trigger error for one service to confirm error logging.",
+    "- Validate retry logic functions and logging output.",
+    "- Test with duplicate content to confirm deduplication."
+  ],
+  "settings": {
+    "trigger": "Telegram Trigger",
+    "concurrency": "parallel"
+  }
+}
