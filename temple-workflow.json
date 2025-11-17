@@ -1,0 +1,575 @@
+{
+  "name": "Temple Multi-Platform Content Distribution",
+  "nodes": [
+    {
+      "parameters": {
+        "updates": ["message"]
+      },
+      "id": "a1b2c3d4-1111-1111-1111-111111111111",
+      "name": "Telegram Trigger",
+      "type": "n8n-nodes-base.telegramTrigger",
+      "typeVersion": 1.1,
+      "position": [250, 300],
+      "webhookId": "temple-webhook",
+      "credentials": {
+        "telegramApi": {
+          "id": "TELEGRAM_CREDENTIAL_ID",
+          "name": "Telegram Bot API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract message data from Telegram\nconst messageData = items[0].json.message;\nconst caption = messageData.caption || messageData.text || '';\nconst photos = messageData.photo || [];\n\n// Parse title (first line) and description\nconst lines = caption.split('\\n');\nconst title = lines[0] || 'Temple Activity Update';\nconst description = lines.slice(1).join('\\n').trim() || caption;\n\n// Generate unique activity ID\nconst activityId = `activity_${Date.now()}`;\n\n// Extract image file IDs (get largest size)\nconst imageFileIds = photos.length > 0 ? [photos[photos.length - 1].file_id] : [];\n\n// Check for document attachments\nif (messageData.document && messageData.document.mime_type?.startsWith('image/')) {\n  imageFileIds.push(messageData.document.file_id);\n}\n\nreturn [{\n  json: {\n    id: activityId,\n    title: title,\n    description: description,\n    imageFileIds: imageFileIds,\n    date: new Date().toISOString(),\n    rawMessage: messageData,\n    hasImages: imageFileIds.length > 0\n  }\n}];"
+      },
+      "id": "a1b2c3d4-2222-2222-2222-222222222222",
+      "name": "Extract Content",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [450, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.hasImages }}",
+              "value2": "={{ true }}"
+            }
+          ]
+        }
+      },
+      "id": "a1b2c3d4-3333-3333-3333-333333333333",
+      "name": "Has Images?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [650, 300]
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "a1b2c3d4-4444-4444-4444-444444444444",
+      "name": "Loop Over Images",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [850, 200]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.telegram.org/bot{{ $credentials.telegramApi.accessToken }}/getFile",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { file_id: $json.imageFileIds[$node['Loop Over Images'].context.currentRunIndex] } }}",
+        "options": {}
+      },
+      "id": "a1b2c3d4-5555-5555-5555-555555555555",
+      "name": "Get Telegram File",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1050, 200],
+      "credentials": {
+        "telegramApi": {
+          "id": "TELEGRAM_CREDENTIAL_ID",
+          "name": "Telegram Bot API"
+        }
+      },
+      "continueOnFail": true,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "url": "=https://api.telegram.org/file/bot{{ $credentials.telegramApi.accessToken }}/{{ $json.result.file_path }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file"
+            }
+          }
+        }
+      },
+      "id": "a1b2c3d4-6666-6666-6666-666666666666",
+      "name": "Download Image",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1250, 200],
+      "continueOnFail": true,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.imgbb.com/1/upload?key={{ $credentials.imgbbApi.apiKey }}",
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "image",
+              "value": "={{ $binary.data.toString('base64') }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "a1b2c3d4-7777-7777-7777-777777777777",
+      "name": "Upload to ImgBB",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1450, 200],
+      "credentials": {
+        "imgbbApi": {
+          "id": "IMGBB_CREDENTIAL_ID",
+          "name": "ImgBB API"
+        }
+      },
+      "continueOnFail": true,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "jsCode": "const imgbbResponse = $input.first().json.data;\n\nreturn [{\n  json: {\n    imageUrl: imgbbResponse.url,\n    displayUrl: imgbbResponse.display_url,\n    deleteUrl: imgbbResponse.delete_url,\n    uploadSuccess: true\n  }\n}];"
+      },
+      "id": "a1b2c3d4-8888-8888-8888-888888888888",
+      "name": "Store Image URL",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1650, 200]
+    },
+    {
+      "parameters": {
+        "aggregate": "aggregateAllItemData",
+        "destinationFieldName": "uploadedImages",
+        "options": {}
+      },
+      "id": "a1b2c3d4-9999-9999-9999-999999999999",
+      "name": "Aggregate Images",
+      "type": "n8n-nodes-base.aggregate",
+      "typeVersion": 1,
+      "position": [1850, 200]
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineByPosition",
+        "options": {}
+      },
+      "id": "a1b2c3d4-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+      "name": "Merge Data",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 2.1,
+      "position": [2050, 250]
+    },
+    {
+      "parameters": {
+        "jsCode": "const contentData = $input.first().json;\nconst images = contentData.uploadedImages || [];\n\nconst imageUrls = images.filter(img => img.uploadSuccess).map(img => img.imageUrl);\n\nreturn [{\n  json: {\n    id: contentData.id,\n    title: contentData.title,\n    description: contentData.description,\n    images: imageUrls,\n    date: contentData.date,\n    firstImage: imageUrls[0] || null,\n    timestamp: Date.now()\n  }\n}];"
+      },
+      "id": "a1b2c3d4-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+      "name": "Prepare Final Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2250, 250]
+    },
+    {
+      "parameters": {},
+      "id": "a1b2c3d4-cccc-cccc-cccc-cccccccccccc",
+      "name": "Split to Platforms",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [2450, 250]
+    },
+    {
+      "parameters": {
+        "jsCode": "const owner = 'YOUR_GITHUB_USERNAME';\nconst repo = 'YOUR_REPOSITORY_NAME';\nconst filePath = 'activities.json';\n\nreturn [{\n  json: {\n    owner: owner,\n    repo: repo,\n    filePath: filePath,\n    newActivity: $input.first().json\n  }\n}];"
+      },
+      "id": "a1b2c3d4-dddd-dddd-dddd-dddddddddddd",
+      "name": "Prepare GitHub Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2650, 100]
+    },
+    {
+      "parameters": {
+        "url": "=https://api.github.com/repos/{{ $json.owner }}/{{ $json.repo }}/contents/{{ $json.filePath }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/vnd.github.v3+json"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "a1b2c3d4-eeee-eeee-eeee-eeeeeeeeeeee",
+      "name": "Get Current Activities",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2850, 100],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "GITHUB_CREDENTIAL_ID",
+          "name": "GitHub Token"
+        }
+      },
+      "continueOnFail": true,
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "jsCode": "const newActivity = $node['Prepare GitHub Data'].json.newActivity;\nconst githubData = $input.first().json;\n\nlet activities = [];\ntry {\n  const content = Buffer.from(githubData.content, 'base64').toString('utf8');\n  activities = JSON.parse(content);\n} catch (error) {\n  console.log('Starting fresh activities array');\n}\n\nactivities.unshift(newActivity);\nactivities = activities.slice(0, 50);\n\nconst updatedContent = Buffer.from(JSON.stringify(activities, null, 2)).toString('base64');\n\nreturn [{\n  json: {\n    owner: $node['Prepare GitHub Data'].json.owner,\n    repo: $node['Prepare GitHub Data'].json.repo,\n    filePath: $node['Prepare GitHub Data'].json.filePath,\n    sha: githubData.sha,\n    content: updatedContent,\n    message: `Add temple activity: ${newActivity.title}`\n  }\n}];"
+      },
+      "id": "a1b2c3d4-ffff-ffff-ffff-ffffffffffff",
+      "name": "Update Activities JSON",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3050, 100]
+    },
+    {
+      "parameters": {
+        "method": "PUT",
+        "url": "=https://api.github.com/repos/{{ $json.owner }}/{{ $json.repo }}/contents/{{ $json.filePath }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/vnd.github.v3+json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ message: $json.message, content: $json.content, sha: $json.sha }) }}",
+        "options": {}
+      },
+      "id": "b1b2c3d4-1111-1111-1111-111111111111",
+      "name": "Commit to GitHub",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [3250, 100],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "GITHUB_CREDENTIAL_ID",
+          "name": "GitHub Token"
+        }
+      },
+      "continueOnFail": true,
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "jsCode": "const activity = $input.first().json;\nconst caption = `${activity.title}\\n\\n${activity.description}\\n\\n#Temple #Devotion #Spirituality #TempleUpdate`;\n\nreturn [{\n  json: {\n    imageUrl: activity.firstImage,\n    caption: caption,\n    igUserId: 'YOUR_INSTAGRAM_BUSINESS_ACCOUNT_ID'\n  }\n}];"
+      },
+      "id": "b1b2c3d4-2222-2222-2222-222222222222",
+      "name": "Prepare Instagram Post",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2650, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.facebook.com/v18.0/{{ $json.igUserId }}/media?access_token={{ $credentials.facebookGraphApi.accessToken }}&image_url={{ encodeURIComponent($json.imageUrl) }}&caption={{ encodeURIComponent($json.caption) }}",
+        "options": {}
+      },
+      "id": "b1b2c3d4-3333-3333-3333-333333333333",
+      "name": "Create IG Container",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2850, 300],
+      "credentials": {
+        "facebookGraphApi": {
+          "id": "FACEBOOK_CREDENTIAL_ID",
+          "name": "Facebook Graph API"
+        }
+      },
+      "continueOnFail": true,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 10000
+    },
+    {
+      "parameters": {
+        "amount": 15,
+        "unit": "seconds"
+      },
+      "id": "b1b2c3d4-4444-4444-4444-444444444444",
+      "name": "Wait for IG Processing",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [3050, 300],
+      "webhookId": "ig-wait"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.facebook.com/v18.0/{{ $node['Prepare Instagram Post'].json.igUserId }}/media_publish?access_token={{ $credentials.facebookGraphApi.accessToken }}&creation_id={{ $json.id }}",
+        "options": {}
+      },
+      "id": "b1b2c3d4-5555-5555-5555-555555555555",
+      "name": "Publish to Instagram",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [3250, 300],
+      "credentials": {
+        "facebookGraphApi": {
+          "id": "FACEBOOK_CREDENTIAL_ID",
+          "name": "Facebook Graph API"
+        }
+      },
+      "continueOnFail": true,
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 10000
+    },
+    {
+      "parameters": {
+        "jsCode": "const activity = $input.first().json;\nconst message = `*${activity.title}*\\n\\n${activity.description}`;\n\nreturn [{\n  json: {\n    channelId: 'YOUR_WHATSAPP_CHANNEL_ID@newsletter',\n    message: message,\n    imageUrl: activity.firstImage\n  }\n}];"
+      },
+      "id": "b1b2c3d4-6666-6666-6666-666666666666",
+      "name": "Prepare WhatsApp Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2650, 500]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://gate.whapi.cloud/messages/text",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "accept",
+              "value": "application/json"
+            },
+            {
+              "name": "content-type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ to: $json.channelId, body: $json.message }) }}",
+        "options": {}
+      },
+      "id": "b1b2c3d4-7777-7777-7777-777777777777",
+      "name": "Send WhatsApp Text",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2850, 500],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "WHAPI_CREDENTIAL_ID",
+          "name": "Whapi.cloud Token"
+        }
+      },
+      "continueOnFail": true,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $node['Prepare WhatsApp Message'].json.imageUrl !== null }}",
+              "value2": "={{ true }}"
+            }
+          ]
+        }
+      },
+      "id": "b1b2c3d4-8888-8888-8888-888888888888",
+      "name": "Has Image for WhatsApp?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [3050, 500]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://gate.whapi.cloud/messages/image",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "accept",
+              "value": "application/json"
+            },
+            {
+              "name": "content-type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ to: $node['Prepare WhatsApp Message'].json.channelId, media: $node['Prepare WhatsApp Message'].json.imageUrl }) }}",
+        "options": {}
+      },
+      "id": "b1b2c3d4-9999-9999-9999-999999999999",
+      "name": "Send WhatsApp Image",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [3250, 450],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "WHAPI_CREDENTIAL_ID",
+          "name": "Whapi.cloud Token"
+        }
+      },
+      "continueOnFail": true,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineAll",
+        "options": {}
+      },
+      "id": "b1b2c3d4-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+      "name": "Merge Platform Results",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 2.1,
+      "position": [3450, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const results = {\n  activityId: $node['Prepare Final Data'].json.id,\n  timestamp: new Date().toISOString(),\n  platforms: {\n    github: !!$node['Commit to GitHub']?.json?.commit,\n    instagram: !!$node['Publish to Instagram']?.json?.id,\n    whatsapp: !!$node['Send WhatsApp Text']?.json?.sent\n  }\n};\n\nconsole.log('Content Distribution Complete:', results);\n\nreturn [{\n  json: {\n    success: true,\n    message: 'Content successfully distributed to all platforms',\n    results: results\n  }\n}];"
+      },
+      "id": "b1b2c3d4-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+      "name": "Log Success",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3650, 300]
+    }
+  ],
+  "connections": {
+    "Telegram Trigger": {
+      "main": [[{"node": "Extract Content", "type": "main", "index": 0}]]
+    },
+    "Extract Content": {
+      "main": [[{"node": "Has Images?", "type": "main", "index": 0}]]
+    },
+    "Has Images?": {
+      "main": [
+        [{"node": "Loop Over Images", "type": "main", "index": 0}],
+        [{"node": "Merge Data", "type": "main", "index": 1}]
+      ]
+    },
+    "Loop Over Images": {
+      "main": [
+        [{"node": "Get Telegram File", "type": "main", "index": 0}],
+        [{"node": "Aggregate Images", "type": "main", "index": 0}]
+      ]
+    },
+    "Get Telegram File": {
+      "main": [[{"node": "Download Image", "type": "main", "index": 0}]]
+    },
+    "Download Image": {
+      "main": [[{"node": "Upload to ImgBB", "type": "main", "index": 0}]]
+    },
+    "Upload to ImgBB": {
+      "main": [[{"node": "Store Image URL", "type": "main", "index": 0}]]
+    },
+    "Store Image URL": {
+      "main": [[{"node": "Loop Over Images", "type": "main", "index": 0}]]
+    },
+    "Aggregate Images": {
+      "main": [[{"node": "Merge Data", "type": "main", "index": 0}]]
+    },
+    "Merge Data": {
+      "main": [[{"node": "Prepare Final Data", "type": "main", "index": 0}]]
+    },
+    "Prepare Final Data": {
+      "main": [[{"node": "Split to Platforms", "type": "main", "index": 0}]]
+    },
+    "Split to Platforms": {
+      "main": [[
+        {"node": "Prepare GitHub Data", "type": "main", "index": 0},
+        {"node": "Prepare Instagram Post", "type": "main", "index": 0},
+        {"node": "Prepare WhatsApp Message", "type": "main", "index": 0}
+      ]]
+    },
+    "Prepare GitHub Data": {
+      "main": [[{"node": "Get Current Activities", "type": "main", "index": 0}]]
+    },
+    "Get Current Activities": {
+      "main": [[{"node": "Update Activities JSON", "type": "main", "index": 0}]]
+    },
+    "Update Activities JSON": {
+      "main": [[{"node": "Commit to GitHub", "type": "main", "index": 0}]]
+    },
+    "Commit to GitHub": {
+      "main": [[{"node": "Merge Platform Results", "type": "main", "index": 0}]]
+    },
+    "Prepare Instagram Post": {
+      "main": [[{"node": "Create IG Container", "type": "main", "index": 0}]]
+    },
+    "Create IG Container": {
+      "main": [[{"node": "Wait for IG Processing", "type": "main", "index": 0}]]
+    },
+    "Wait for IG Processing": {
+      "main": [[{"node": "Publish to Instagram", "type": "main", "index": 0}]]
+    },
+    "Publish to Instagram": {
+      "main": [[{"node": "Merge Platform Results", "type": "main", "index": 1}]]
+    },
+    "Prepare WhatsApp Message": {
+      "main": [[{"node": "Send WhatsApp Text", "type": "main", "index": 0}]]
+    },
+    "Send WhatsApp Text": {
+      "main": [[{"node": "Has Image for WhatsApp?", "type": "main", "index": 0}]]
+    },
+    "Has Image for WhatsApp?": {
+      "main": [
+        [{"node": "Send WhatsApp Image", "type": "main", "index": 0}],
+        [{"node": "Merge Platform Results", "type": "main", "index": 2}]
+      ]
+    },
+    "Send WhatsApp Image": {
+      "main": [[{"node": "Merge Platform Results", "type": "main", "index": 2}]]
+    },
+    "Merge Platform Results": {
+      "main": [[{"node": "Log Success", "type": "main", "index": 0}]]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "versionId": "1.0.0",
+  "meta": {
+    "instanceId": ""
+  },
+  "id": "temple-content-distribution",
+  "tags": []
+}
